@@ -1,5 +1,4 @@
 import os
-import re
 import sys
 import time
 import copy
@@ -7,13 +6,10 @@ import random
 from collections import deque
 
 # =====================================================================
-# ΒΗΜΑ 1: PARSER ΔΕΔΟΜΕΝΩΝ & ΕΛΕΓΧΟΣ ΣΥΜΒΑΤΟΤΗΤΑΣ
+# ΒΗΜΑ 1: ΑΠΛΟΠΟΙΗΜΕΝΟΣ ΚΑΙ ΘΩΡΑΚΙΣΜΕΝΟΣ PARSER
 # =====================================================================
 
 def parse_rlfap_problem(problem_name, data_dir="data"):
-    """
-    Διαβάζει τα αρχεία domX.txt, varX.txt, ctrX.txt για ένα συγκεκριμένο πρόβλημα Χ.
-    """
     dom_file = os.path.join(data_dir, f"dom{problem_name}.txt")
     var_file = os.path.join(data_dir, f"var{problem_name}.txt")
     ctr_file = os.path.join(data_dir, f"ctr{problem_name}.txt")
@@ -21,65 +17,57 @@ def parse_rlfap_problem(problem_name, data_dir="data"):
     if not (os.path.exists(dom_file) and os.path.exists(var_file) and os.path.exists(ctr_file)):
         return None
     
-    # 1. Ανάγνωση Πεδίων Ορισμού (Domains)
+    # 1. Ανάγνωση Πεδίων Ορισμού
     domains = {}
     with open(dom_file, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
+        lines = [line.strip() for line in f if line.strip()]
         for line in lines[1:]:
-            line = line.strip()
-            if not line:
-                continue
             parts = list(map(int, line.split()))
-            dom_id = parts[0]
-            values = parts[2:]
-            domains[dom_id] = values
+            if len(parts) >= 3:
+                dom_id = parts[0]
+                values = parts[2:]
+                domains[dom_id] = values
 
-    # 2. Ανάγνωση Μεταβλητών (Variables)
+    # 2. Ανάγνωση Μεταβλητών
     variables = {}
     with open(var_file, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
+        lines = [line.strip() for line in f if line.strip()]
         for line in lines[1:]:
-            line = line.strip()
-            if not line:
-                continue
             parts = list(map(int, line.split()))
-            var_id = parts[0]
-            dom_id = parts[1]
-            variables[var_id] = dom_id
+            if len(parts) == 2:
+                var_id = parts[0]
+                dom_id = parts[1]
+                variables[var_id] = dom_id
 
-    # 3. Ανάγνωση Περιορισμών (Constraints)
+    # 3. Ανάγνωση Περιορισμών
     constraints = []
     with open(ctr_file, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
+        lines = [line.strip() for line in f if line.strip()]
         for line in lines[1:]:
-            line = line.strip()
-            if not line:
-                continue
-            match = re.match(r"(\d+)\s+(\d+)\s+([>=])\s+(\d+)", line)
-            if match:
-                var1 = int(match.group(1))
-                var2 = int(match.group(2))
-                operator = match.group(3)
-                value = int(match.group(4))
-                constraints.append((var1, var2, operator, value))
+            clean_line = line.replace('>', ' > ').replace('=', ' = ')
+            parts = clean_line.split()
+            if len(parts) == 4:
+                try:
+                    var1 = int(parts[0])
+                    var2 = int(parts[1])
+                    operator = parts[2]
+                    value = int(parts[3])
+                    constraints.append((var1, var2, operator, value))
+                except ValueError:
+                    continue
                 
+    print(f"   [Parser OK]: Φορτώθηκαν {len(variables)} μεταβλητές, {len(domains)} πεδία και {len(constraints)} περιορισμοί.")
     return domains, variables, constraints
 
 
 def is_consistent(var, val, assignment, constraints):
-    """
-    Ελέγχει αν η ανάθεση της τιμής 'val' στη μεταβλητή 'var' 
-    είναι συμβατή με τις ήδη ανατεθείσες μεταβλητές.
-    """
     # // Σημείο ελέγχου εγκυρότητας μιας ανάθεσης τιμής
     for var1, var2, operator, alpha in constraints:
         if var1 == var or var2 == var:
             other_var = var2 if var1 == var else var1
-            
             if other_var in assignment:
                 val1 = val if var1 == var else assignment[other_var]
                 val2 = assignment[other_var] if var1 == var else val
-                
                 if operator == '>':
                     if not (abs(val1 - val2) > alpha):
                         return False
@@ -93,40 +81,81 @@ def is_consistent(var, val, assignment, constraints):
 # =====================================================================
 
 def select_unassigned_variable(assignment, variables, current_domains, strategy):
-    """
-    Επιλέγει την επόμενη μεταβλητή προς ανάθεση ανάλογα με τη στρατηγική.
-    """
     unassigned = [v for v in variables if v not in assignment]
-    
-    # // Σημείο ελέγχου αν το πρόβλημα δεν έχει λύση
     if not unassigned:
         return None
-
     # // Σημείο επιλογής της επόμενης μεταβλητής
     if strategy == "random":
-        return random.choice(unassigned)
-        
+        return unassigned[0]
     elif strategy == "mrv":
         min_size = min(len(current_domains[v]) for v in unassigned)
         candidates = [v for v in unassigned if len(current_domains[v]) == min_size]
-        return random.choice(candidates)
+        return candidates[0]
 
 # =====================================================================
-# ΑΛΓΟΡΙΘΜΟΙ ΕΠΙΛΥΣΗΣ (ΕΡΩΤΗΜΑ 1)
+# ΑΛΓΟΡΙΘΜΟΙ ΕΠΙΛΥΣΗΣ ΜΕ ΔΙΠΛΟ ΚΟΦΤΗ (ΧΡΟΝΟΣ & ΑΝΑΘΕΣΕΙΣ)
 # =====================================================================
 
-def forward_checking_backtracking(assignment, variables, current_domains, constraints, strategy, metrics):
+def fast_backtracking_double_limit(variables, current_domains, constraints, strategy, metrics, start_time, max_assigns, timeout_sec=30.0):
+    stack = [({}, [])]
+    
+    while stack:
+        assignment, selected_vars = stack.pop()
+        
+        if len(assignment) == len(variables):
+            return assignment
+            
+        # Κόφτης 1: Έλεγχος Αναθέσεων
+        if metrics["assignments"] > max_assigns:
+            metrics["timeout"] = True
+            return None
+
+        # Κόφτης 2: Έλεγχος Πραγματικού Χρόνου
+        if time.perf_counter() - start_time > timeout_sec:
+            metrics["timeout"] = True
+            return None
+            
+        var = select_unassigned_variable(assignment, variables, current_domains, strategy)
+        if var is None:
+            continue
+            
+        for val in current_domains[var]:
+            metrics["assignments"] += 1
+            if is_consistent(var, val, assignment, constraints):
+                new_assignment = assignment.copy()
+                new_assignment[var] = val
+                stack.append((new_assignment, selected_vars + [var]))
+                
+    return None
+
+
+def forward_checking_backtracking_double_limit(assignment, variables, current_domains, constraints, strategy, metrics, start_time, max_assigns, timeout_sec=30.0):
     if len(assignment) == len(variables):
         return assignment
+
+    # Κόφτης 1: Έλεγχος Αναθέσεων
+    if metrics["assignments"] > max_assigns:
+        metrics["timeout"] = True
+        return None
+
+    # Κόφτης 2: Έλεγχος Πραγματικού Χρόνου
+    if time.perf_counter() - start_time > timeout_sec:
+        metrics["timeout"] = True
+        return None
 
     var = select_unassigned_variable(assignment, variables, current_domains, strategy)
     if var is None:
         return None
 
-    values = list(current_domains[var])
-    for val in values:
+    for val in list(current_domains[var]):
         metrics["assignments"] += 1
         
+        # Περιοδικός έλεγχος χρόνου και αναθέσεων ανά 500 βήματα
+        if metrics["assignments"] % 500 == 0:
+            if metrics["assignments"] > max_assigns or (time.perf_counter() - start_time > timeout_sec):
+                metrics["timeout"] = True
+                return None
+
         if is_consistent(var, val, assignment, constraints):
             assignment[var] = val
             domains_backup = copy.deepcopy(current_domains)
@@ -136,7 +165,6 @@ def forward_checking_backtracking(assignment, variables, current_domains, constr
             for var1, var2, operator, alpha in constraints:
                 if var1 == var or var2 == var:
                     other_var = var2 if var1 == var else var1
-                    
                     if other_var not in assignment:
                         # // Σημείο ελέγχου αν υποστηρίζεται μία τιμή μεταβλητής από τιμές άλλης μεταβλητής
                         remaining_values = []
@@ -154,9 +182,6 @@ def forward_checking_backtracking(assignment, variables, current_domains, constr
                                     
                             if satisfied:
                                 remaining_values.append(other_val)
-                            else:
-                                # // Σημείο διαγραφής μία τιμής από το πεδίο ορισμού μεταβλητής
-                                pass
                         
                         current_domains[other_var] = remaining_values
                         if not current_domains[other_var]:
@@ -164,7 +189,7 @@ def forward_checking_backtracking(assignment, variables, current_domains, constr
                             break
             
             if not failure:
-                result = forward_checking_backtracking(assignment, variables, current_domains, constraints, strategy, metrics)
+                result = forward_checking_backtracking_double_limit(assignment, variables, current_domains, constraints, strategy, metrics, start_time, max_assigns, timeout_sec)
                 if result is not None:
                     return result
             
@@ -214,7 +239,6 @@ def revise(var_i, var_j, operator, alpha, is_direct, current_domains):
         for val_j in current_domains[var_j]:
             val1 = val_i if is_direct else val_j
             val2 = val_j if is_direct else val_i
-            
             if operator == '>':
                 if abs(val1 - val2) > alpha:
                     has_support = True
@@ -241,13 +265,8 @@ def revise(var_i, var_j, operator, alpha, is_direct, current_domains):
 # =====================================================================
 
 def discover_problems(data_dir="data"):
-    """
-    Ψάχνει τον φάκελο data_dir και βρίσκει όλα τα μοναδικά ονόματα προβλημάτων
-    με βάση τα αρχεία domX.txt που υπάρχουν.
-    """
     if not os.path.exists(data_dir):
         return []
-        
     problems = []
     for filename in os.listdir(data_dir):
         if filename.startswith("dom") and filename.endswith(".txt"):
@@ -255,12 +274,10 @@ def discover_problems(data_dir="data"):
             if (os.path.exists(os.path.join(data_dir, f"var{prob_name}.txt")) and 
                 os.path.exists(os.path.join(data_dir, f"ctr{prob_name}.txt"))):
                 problems.append(prob_name)
-                
     try:
         problems.sort(key=int)
     except ValueError:
         problems.sort()
-        
     return problems
 
 # =====================================================================
@@ -268,80 +285,45 @@ def discover_problems(data_dir="data"):
 # =====================================================================
 
 def run_experiments_for_problem(prob_name, data_dir="data"):
+    print(f"-> Ξεκινάει το διάβασμα του προβλήματος {prob_name}...")
     parsed = parse_rlfap_problem(prob_name, data_dir)
     if not parsed:
         return None
         
     domains, variables, constraints = parsed
     results = {}
-    
-    # Προστασία: Μέγιστο όριο αναθέσεων για να μην κολλάει στο τυφλό Backtracking
-    MAX_ASSIGNMENTS = 500000
 
-    def is_over_limit(m):
-        return m["assignments"] > MAX_ASSIGNMENTS
+    # ΡΥΘΜΙΣΗ ΟΡΙΩΝ (30 SEC TIMEOUT & SWEET SPOT ΑΝΑΘΕΣΕΩΝ)
+    TIMEOUT_SEC = 30.0
+    BT_LIMIT = 50000
+    FC_LIMIT = 5000000
 
-    # Τροποποιημένο BT_Random με έλεγχο ορίου προστασίας
-    def bt_random_limit(assignment, vars_dict, cd, cons, m):
-        if is_over_limit(m): return None
-        if len(assignment) == len(vars_dict): return assignment
-        var = select_unassigned_variable(assignment, vars_dict, cd, "random")
-        if var is None: return None
-        for val in list(cd[var]):
-            m["assignments"] += 1
-            if is_over_limit(m): return None
-            if is_consistent(var, val, assignment, cons):
-                assignment[var] = val
-                res = bt_random_limit(assignment, vars_dict, cd, cons, m)
-                if res is not None: return res
-                del assignment[var]
-        return None
-
-    # Τροποποιημένο BT_MRV με έλεγχο ορίου προστασίας
-    def bt_mrv_limit(assignment, vars_dict, cd, cons, m):
-        if is_over_limit(m): return None
-        if len(assignment) == len(vars_dict): return assignment
-        var = select_unassigned_variable(assignment, vars_dict, cd, "mrv")
-        if var is None: return None
-        for val in list(cd[var]):
-            m["assignments"] += 1
-            if is_over_limit(m): return None
-            if is_consistent(var, val, assignment, cons):
-                assignment[var] = val
-                res = bt_mrv_limit(assignment, vars_dict, cd, cons, m)
-                if res is not None: return res
-                del assignment[var]
-        return None
-
-    # 1. BT + Random
+    print("   [Running]: BT_Random...")
     cd = {v: list(domains[variables[v]]) for v in variables}
-    m = {"assignments": 0}; start = time.perf_counter()
-    sol = bt_random_limit({}, variables, cd, constraints, m)
-    t = time.perf_counter() - start
-    results["BT_Random"] = {"solved": sol is not None, "assigns": m["assignments"], "time": t, "timeout": is_over_limit(m)}
+    m = {"assignments": 0, "timeout": False}; start = time.perf_counter()
+    sol = fast_backtracking_double_limit(variables, cd, constraints, "random", m, start, BT_LIMIT, TIMEOUT_SEC)
+    results["BT_Random"] = {"solved": sol is not None, "assigns": m["assignments"], "time": time.perf_counter() - start, "timeout": m["timeout"]}
 
-    # 2. BT + MRV
+    print("   [Running]: BT_MRV...")
     cd = {v: list(domains[variables[v]]) for v in variables}
-    m = {"assignments": 0}; start = time.perf_counter()
-    sol = bt_mrv_limit({}, variables, cd, constraints, m)
-    t = time.perf_counter() - start
-    results["BT_MRV"] = {"solved": sol is not None, "assigns": m["assignments"], "time": t, "timeout": is_over_limit(m)}
+    m = {"assignments": 0, "timeout": False}; start = time.perf_counter()
+    sol = fast_backtracking_double_limit(variables, cd, constraints, "mrv", m, start, BT_LIMIT, TIMEOUT_SEC)
+    results["BT_MRV"] = {"solved": sol is not None, "assigns": m["assignments"], "time": time.perf_counter() - start, "timeout": m["timeout"]}
 
-    # 3. FC + Random
+    print("   [Running]: FC_Random...")
     cd = {v: list(domains[variables[v]]) for v in variables}
-    m = {"assignments": 0}; start = time.perf_counter()
-    sol = forward_checking_backtracking({}, variables, cd, constraints, "random", m)
-    t = time.perf_counter() - start
-    results["FC_Random"] = {"solved": sol is not None, "assigns": m["assignments"], "time": t, "timeout": False}
+    m = {"assignments": 0, "timeout": False}; start = time.perf_counter()
+    sol = forward_checking_backtracking_double_limit({}, variables, cd, constraints, "random", m, start, FC_LIMIT, TIMEOUT_SEC)
+    results["FC_Random"] = {"solved": sol is not None, "assigns": m["assignments"], "time": time.perf_counter() - start, "timeout": m["timeout"]}
 
-    # 4. FC + MRV
+    print("   [Running]: FC_MRV...")
     cd = {v: list(domains[variables[v]]) for v in variables}
-    m = {"assignments": 0}; start = time.perf_counter()
-    sol = forward_checking_backtracking({}, variables, cd, constraints, "mrv", m)
-    t = time.perf_counter() - start
-    results["FC_MRV"] = {"solved": sol is not None, "assigns": m["assignments"], "time": t, "timeout": False}
+    m = {"assignments": 0, "timeout": False}; start = time.perf_counter()
+    sol = forward_checking_backtracking_double_limit({}, variables, cd, constraints, "mrv", m, start, FC_LIMIT, TIMEOUT_SEC)
+    results["FC_MRV"] = {"solved": sol is not None, "assigns": m["assignments"], "time": time.perf_counter() - start, "timeout": m["timeout"]}
 
-    # --- ΕΡΩΤΗΜΑ 2 (Με AC-3 Προ-επεξεργασία) ---
+    # --- ΕΡΩΤΗΜΑ 2 (Με AC-3) ---
+    print("   [Running]: AC-3 Preprocessing + Solvers...")
     for algo_name, solver_func in [("AC3_BT_Random", "chronological"), ("AC3_BT_MRV", "chronological"), 
                                    ("AC3_FC_Random", "forward_checking"), ("AC3_FC_MRV", "forward_checking")]:
         strategy = "mrv" if "MRV" in algo_name else "random"
@@ -351,26 +333,20 @@ def run_experiments_for_problem(prob_name, data_dir="data"):
         is_consistent_prob, deleted_vals = ac3(variables, cd, constraints)
         
         sol = None
-        m = {"assignments": 0}
-        timeout_flag = False
+        m = {"assignments": 0, "timeout": False}
         
         if is_consistent_prob:
             if solver_func == "chronological":
-                if strategy == "random":
-                    sol = bt_random_limit({}, variables, cd, constraints, m)
-                else:
-                    sol = bt_mrv_limit({}, variables, cd, constraints, m)
-                timeout_flag = is_over_limit(m)
+                sol = fast_backtracking_double_limit(variables, cd, constraints, strategy, m, start, BT_LIMIT, TIMEOUT_SEC)
             else:
-                sol = forward_checking_backtracking({}, variables, cd, constraints, strategy, m)
+                sol = forward_checking_backtracking_double_limit({}, variables, cd, constraints, strategy, m, start, FC_LIMIT, TIMEOUT_SEC)
                 
-        t = time.perf_counter() - start
-        results[algo_name] = {"deleted": deleted_vals, "solved": sol is not None, "assigns": m["assignments"], "time": t, "timeout": timeout_flag}
+        results[algo_name] = {"deleted": deleted_vals, "solved": sol is not None, "assigns": m["assignments"], "time": time.perf_counter() - start, "timeout": m["timeout"]}
 
     return results
 
 # =====================================================================
-# MAIN EXECUTION
+# ΚΥΡΙΑ ΕΚΤΕΛΕΣΗ
 # =====================================================================
 
 if __name__ == "__main__":
@@ -384,28 +360,22 @@ if __name__ == "__main__":
     print("-" * 80)
     
     for prob in problems:
-        print(f"\n>>> Επεξεργασία Προβλήματος: {prob} <<<")
+        print(f"\n>>> ΕΠΕΞΕΡΓΑΣΙΑ ΠΡΟΒΛΗΜΑΤΟΣ: {prob} <<<")
         res = run_experiments_for_problem(prob)
         if not res:
             continue
             
-        print("\n[ΕΡΩΤΗΜΑ 1] Αποτελέσματα:")
-        print(f"{'Αλγόριθμος':<15} | {'Λύση':<8} | {'Αναθέσεις':<12} | {'Χρόνος (sec)':<12}")
-        print("-" * 55)
+        print("\n   [ΕΡΩΤΗΜΑ 1] Αποτελέσματα:")
+        print(f"   {'Αλγόριθμος':<15} | {'Λύση':<8} | {'Αναθέσεις':<12} | {'Χρόνος (sec)':<12}")
+        print("   " + "-" * 55)
         for k in ["BT_Random", "BT_MRV", "FC_Random", "FC_MRV"]:
-            if res[k]["timeout"]:
-                sol_str = "Timeout"
-            else:
-                sol_str = "Βρέθηκε" if res[k]["solved"] else "Όχι"
-            print(f"{k:<15} | {sol_str:<8} | {res[k]['assigns']:<12} | {res[k]['time']:.4f}")
+            sol_str = "Timeout" if res[k]["timeout"] else ("Βρέθηκε" if res[k]["solved"] else "Όχι")
+            print(f"   {k:<15} | {sol_str:<8} | {res[k]['assigns']:<12} | {res[k]['time']:.4f}")
             
-        print("\n[ΕΡΩΤΗΜΑ 2] Αποτελέσματα (με AC-3):")
-        print(f"{'Αλγόριθμος':<18} | {'Διαγραφές':<9} | {'Λύση':<8} | {'Αναθέσεις':<12} | {'Χρόνος (sec)':<12}")
-        print("-" * 70)
+        print("\n   [ΕΡΩΤΗΜΑ 2] Αποτελέσματα (με AC-3):")
+        print(f"   {'Αλγόριθμος':<18} | {'Διαγραφές':<9} | {'Λύση':<8} | {'Αναθέσεις':<12} | {'Χρόνος (sec)':<12}")
+        print("   " + "-" * 70)
         for k in ["AC3_BT_Random", "AC3_BT_MRV", "AC3_FC_Random", "AC3_FC_MRV"]:
-            if res[k]["timeout"]:
-                sol_str = "Timeout"
-            else:
-                sol_str = "Βρέθηκε" if res[k]["solved"] else "Όχι"
-            print(f"{k:<18} | {res[k]['deleted']:<9} | {sol_str:<8} | {res[k]['assigns']:<12} | {res[k]['time']:.4f}")
+            sol_str = "Timeout" if res[k]["timeout"] else ("Βρέθηκε" if res[k]["solved"] else "Όχι")
+            print(f"   {k:<18} | {res[k]['deleted']:<9} | {sol_str:<8} | {res[k]['assigns']:<12} | {res[k]['time']:.4f}")
         print("=" * 80)
