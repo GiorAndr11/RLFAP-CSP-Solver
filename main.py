@@ -261,13 +261,39 @@ def revise(var_i, var_j, operator, alpha, is_direct, current_domains):
     return revised, deleted_count
 
 # =====================================================================
-# ΚΕΝΤΡΙΚΟΣ ΜΗΧΑΝΙΣΜΟΣ ΕΚΤΕΛΕΣΗΣ ΠΕΙΡΑΜΑΤΩΝ
+# ΑΥΤΟΜΑΤΗ ΑΝΑΖΗΤΗΣΗ ΠΡΟΒΛΗΜΑΤΩΝ ΣΤΟΝ ΦΑΚΕΛΟ
 # =====================================================================
+
+def discover_problems(data_dir="data"):
+    """
+    Ψάχνει τον φάκελο data_dir και βρίσκει όλα τα μοναδικά ονόματα προβλημάτων
+    με βάση τα αρχεία domX.txt που υπάρχουν.
+    """
+    if not os.path.exists(data_dir):
+        return []
+        
+    problems = []
+    for filename in os.listdir(data_dir):
+        # Ψάχνουμε αρχεία που ξεκινάνε με 'dom' και τελειώνουν σε '.txt'
+        if filename.startswith("dom") and filename.endswith(".txt"):
+            # Απομονώνουμε το 'X' ανάμεσα στο 'dom' και το '.txt'
+            prob_name = filename[3:-4]
+            # Επιβεβαιώνουμε ότι υπάρχουν και τα αντίστοιχα var και ctr αρχεία
+            if (os.path.exists(os.path.join(data_dir, f"var{prob_name}.txt")) and 
+                os.path.exists(os.path.join(data_dir, f"ctr{prob_name}.txt"))):
+                problems.append(prob_name)
+                
+    # Ταξινομούμε τα ονόματα (αν είναι αριθμοί, ταξινομούνται σωστά)
+    try:
+        problems.sort(key=int)
+    except ValueError:
+        problems.sort()
+        
+    return problems
 
 def run_experiments_for_problem(prob_name, data_dir="data"):
     parsed = parse_rlfap_problem(prob_name, data_dir)
     if not parsed:
-        print(f"Το πρόβλημα {prob_name} δεν βρέθηκε στο φάκελο '{data_dir}'.")
         return None
         
     domains, variables, constraints = parsed
@@ -325,11 +351,15 @@ def run_experiments_for_problem(prob_name, data_dir="data"):
     return results
 
 if __name__ == "__main__":
-    # Λίστα με τα ονόματα των 12 προβλημάτων (π.χ. αν είναι αριθμημένα 1 έως 12 ή έχουν συγκεκριμένα ονόματα)
-    # Μπορείς να τροποποιήσεις τη λίστα ανάλογα με τα ακριβή ονόματα των αρχείων σου στο rlfaps.rar
-    problems = [str(i) for i in range(1, 13)] 
+    # Αυτόματη ανακάλυψη αρχείων μέσα στον φάκελο data/
+    problems = discover_problems("data")
     
-    print("Έναρξη πειραμάτων για τα προβλήματα RLFAPs...")
+    if not problems:
+        print("Σφάλμα: Δεν βρέθηκαν έγκυρα αρχεία προβλημάτων (domX.txt, varX.txt, ctrX.txt) στον φάκελο 'data/'.")
+        print("Παρακαλώ βεβαιωθείτε ότι έχετε ανεβάσει τα αρχεία στον σωστό φάκελο.")
+        sys.exit(1)
+        
+    print(f"Βρέθηκαν {len(problems)} προβλήματα προς επίλυση: {', '.join(problems)}")
     print("-" * 80)
     
     for prob in problems:
