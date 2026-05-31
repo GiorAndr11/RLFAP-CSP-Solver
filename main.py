@@ -115,30 +115,6 @@ def select_unassigned_variable(assignment, variables, current_domains, strategy)
 # ΑΛΓΟΡΙΘΜΟΙ ΕΠΙΛΥΣΗΣ (ΕΡΩΤΗΜΑ 1)
 # =====================================================================
 
-def chronological_backtracking(assignment, variables, current_domains, constraints, strategy, metrics):
-    if len(assignment) == len(variables):
-        return assignment
-
-    var = select_unassigned_variable(assignment, variables, current_domains, strategy)
-    if var is None:
-        return None
-
-    values = list(current_domains[var])
-    for val in values:
-        metrics["assignments"] += 1
-        
-        if is_consistent(var, val, assignment, constraints):
-            assignment[var] = val
-            
-            result = chronological_backtracking(assignment, variables, current_domains, constraints, strategy, metrics)
-            if result is not None:
-                return result
-            
-            del assignment[var]
-            
-    return None
-
-
 def forward_checking_backtracking(assignment, variables, current_domains, constraints, strategy, metrics):
     if len(assignment) == len(variables):
         return assignment
@@ -274,22 +250,22 @@ def discover_problems(data_dir="data"):
         
     problems = []
     for filename in os.listdir(data_dir):
-        # Ψάχνουμε αρχεία που ξεκινάνε με 'dom' και τελειώνουν σε '.txt'
         if filename.startswith("dom") and filename.endswith(".txt"):
-            # Απομονώνουμε το 'X' ανάμεσα στο 'dom' και το '.txt'
             prob_name = filename[3:-4]
-            # Επιβεβαιώνουμε ότι υπάρχουν και τα αντίστοιχα var και ctr αρχεία
             if (os.path.exists(os.path.join(data_dir, f"var{prob_name}.txt")) and 
                 os.path.exists(os.path.join(data_dir, f"ctr{prob_name}.txt"))):
                 problems.append(prob_name)
                 
-    # Ταξινομούμε τα ονόματα (αν είναι αριθμοί, ταξινομούνται σωστά)
     try:
         problems.sort(key=int)
     except ValueError:
         problems.sort()
         
     return problems
+
+# =====================================================================
+# ΚΕΝΤΡΙΚΟΣ ΜΗΧΑΝΙΣΜΟΣ ΕΚΤΕΛΕΣΗΣ ΠΕΙΡΑΜΑΤΩΝ
+# =====================================================================
 
 def run_experiments_for_problem(prob_name, data_dir="data"):
     parsed = parse_rlfap_problem(prob_name, data_dir)
@@ -298,35 +274,72 @@ def run_experiments_for_problem(prob_name, data_dir="data"):
         
     domains, variables, constraints = parsed
     results = {}
+    
+    # Προστασία: Μέγιστο όριο αναθέσεων για να μην κολλάει στο τυφλό Backtracking
+    MAX_ASSIGNMENTS = 500000
 
-    # --- ΕΡΩΤΗΜΑ 1 ---
+    def is_over_limit(m):
+        return m["assignments"] > MAX_ASSIGNMENTS
+
+    # Τροποποιημένο BT_Random με έλεγχο ορίου προστασίας
+    def bt_random_limit(assignment, vars_dict, cd, cons, m):
+        if is_over_limit(m): return None
+        if len(assignment) == len(vars_dict): return assignment
+        var = select_unassigned_variable(assignment, vars_dict, cd, "random")
+        if var is None: return None
+        for val in list(cd[var]):
+            m["assignments"] += 1
+            if is_over_limit(m): return None
+            if is_consistent(var, val, assignment, cons):
+                assignment[var] = val
+                res = bt_random_limit(assignment, vars_dict, cd, cons, m)
+                if res is not None: return res
+                del assignment[var]
+        return None
+
+    # Τροποποιημένο BT_MRV με έλεγχο ορίου προστασίας
+    def bt_mrv_limit(assignment, vars_dict, cd, cons, m):
+        if is_over_limit(m): return None
+        if len(assignment) == len(vars_dict): return assignment
+        var = select_unassigned_variable(assignment, vars_dict, cd, "mrv")
+        if var is None: return None
+        for val in list(cd[var]):
+            m["assignments"] += 1
+            if is_over_limit(m): return None
+            if is_consistent(var, val, assignment, cons):
+                assignment[var] = val
+                res = bt_mrv_limit(assignment, vars_dict, cd, cons, m)
+                if res is not None: return res
+                del assignment[var]
+        return None
+
     # 1. BT + Random
     cd = {v: list(domains[variables[v]]) for v in variables}
     m = {"assignments": 0}; start = time.perf_counter()
-    sol = chronological_backtracking({}, variables, cd, constraints, "random", m)
+    sol = bt_random_limit({}, variables, cd, constraints, m)
     t = time.perf_counter() - start
-    results["BT_Random"] = {"solved": sol is not None, "assigns": m["assignments"], "time": t}
+    results["BT_Random"] = {"solved": sol is not None, "assigns": m["assignments"], "time": t, "timeout": is_over_limit(m)}
 
     # 2. BT + MRV
     cd = {v: list(domains[variables[v]]) for v in variables}
     m = {"assignments": 0}; start = time.perf_counter()
-    sol = chronological_backtracking({}, variables, cd, constraints, "mrv", m)
+    sol = bt_mrv_limit({}, variables, cd, constraints, m)
     t = time.perf_counter() - start
-    results["BT_MRV"] = {"solved": sol is not None, "assigns": m["assignments"], "time": t}
+    results["BT_MRV"] = {"solved": sol is not None, "assigns": m["assignments"], "time": t, "timeout": is_over_limit(m)}
 
     # 3. FC + Random
     cd = {v: list(domains[variables[v]]) for v in variables}
     m = {"assignments": 0}; start = time.perf_counter()
     sol = forward_checking_backtracking({}, variables, cd, constraints, "random", m)
     t = time.perf_counter() - start
-    results["FC_Random"] = {"solved": sol is not None, "assigns": m["assignments"], "time": t}
+    results["FC_Random"] = {"solved": sol is not None, "assigns": m["assignments"], "time": t, "timeout": False}
 
     # 4. FC + MRV
     cd = {v: list(domains[variables[v]]) for v in variables}
     m = {"assignments": 0}; start = time.perf_counter()
     sol = forward_checking_backtracking({}, variables, cd, constraints, "mrv", m)
     t = time.perf_counter() - start
-    results["FC_MRV"] = {"solved": sol is not None, "assigns": m["assignments"], "time": t}
+    results["FC_MRV"] = {"solved": sol is not None, "assigns": m["assignments"], "time": t, "timeout": False}
 
     # --- ΕΡΩΤΗΜΑ 2 (Με AC-3 Προ-επεξεργασία) ---
     for algo_name, solver_func in [("AC3_BT_Random", "chronological"), ("AC3_BT_MRV", "chronological"), 
@@ -339,24 +352,32 @@ def run_experiments_for_problem(prob_name, data_dir="data"):
         
         sol = None
         m = {"assignments": 0}
+        timeout_flag = False
+        
         if is_consistent_prob:
             if solver_func == "chronological":
-                sol = chronological_backtracking({}, variables, cd, constraints, strategy, m)
+                if strategy == "random":
+                    sol = bt_random_limit({}, variables, cd, constraints, m)
+                else:
+                    sol = bt_mrv_limit({}, variables, cd, constraints, m)
+                timeout_flag = is_over_limit(m)
             else:
                 sol = forward_checking_backtracking({}, variables, cd, constraints, strategy, m)
                 
         t = time.perf_counter() - start
-        results[algo_name] = {"deleted": deleted_vals, "solved": sol is not None, "assigns": m["assignments"], "time": t}
+        results[algo_name] = {"deleted": deleted_vals, "solved": sol is not None, "assigns": m["assignments"], "time": t, "timeout": timeout_flag}
 
     return results
 
+# =====================================================================
+# MAIN EXECUTION
+# =====================================================================
+
 if __name__ == "__main__":
-    # Αυτόματη ανακάλυψη αρχείων μέσα στον φάκελο data/
     problems = discover_problems("data")
     
     if not problems:
-        print("Σφάλμα: Δεν βρέθηκαν έγκυρα αρχεία προβλημάτων (domX.txt, varX.txt, ctrX.txt) στον φάκελο 'data/'.")
-        print("Παρακαλώ βεβαιωθείτε ότι έχετε ανεβάσει τα αρχεία στον σωστό φάκελο.")
+        print("Σφάλμα: Δεν βρέθηκαν έγκυρα αρχεία προβλημάτων στον φάκελο 'data/'.")
         sys.exit(1)
         
     print(f"Βρέθηκαν {len(problems)} προβλήματα προς επίλυση: {', '.join(problems)}")
@@ -372,13 +393,19 @@ if __name__ == "__main__":
         print(f"{'Αλγόριθμος':<15} | {'Λύση':<8} | {'Αναθέσεις':<12} | {'Χρόνος (sec)':<12}")
         print("-" * 55)
         for k in ["BT_Random", "BT_MRV", "FC_Random", "FC_MRV"]:
-            sol_str = "Βρέθηκε" if res[k]["solved"] else "Όχι"
+            if res[k]["timeout"]:
+                sol_str = "Timeout"
+            else:
+                sol_str = "Βρέθηκε" if res[k]["solved"] else "Όχι"
             print(f"{k:<15} | {sol_str:<8} | {res[k]['assigns']:<12} | {res[k]['time']:.4f}")
             
         print("\n[ΕΡΩΤΗΜΑ 2] Αποτελέσματα (με AC-3):")
         print(f"{'Αλγόριθμος':<18} | {'Διαγραφές':<9} | {'Λύση':<8} | {'Αναθέσεις':<12} | {'Χρόνος (sec)':<12}")
         print("-" * 70)
         for k in ["AC3_BT_Random", "AC3_BT_MRV", "AC3_FC_Random", "AC3_FC_MRV"]:
-            sol_str = "Βρέθηκε" if res[k]["solved"] else "Όχι"
+            if res[k]["timeout"]:
+                sol_str = "Timeout"
+            else:
+                sol_str = "Βρέθηκε" if res[k]["solved"] else "Όχι"
             print(f"{k:<18} | {res[k]['deleted']:<9} | {sol_str:<8} | {res[k]['assigns']:<12} | {res[k]['time']:.4f}")
         print("=" * 80)
